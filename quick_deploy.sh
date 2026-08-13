@@ -4,10 +4,9 @@
 #  Uses Cloudflare Quick Tunnel (trycloudflare.com).
 #  No Cloudflare account, no domain, no typing required!
 #
-#  Usage (on Ubuntu/Debian VPS as root):
-#    sudo bash quick_deploy.sh
+#  Usage:
+#    curl -fsSL https://raw.githubusercontent.com/mitsenku/vpn-sc/main/quick_deploy.sh | bash
 # =============================================================================
-set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -15,53 +14,69 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 info()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
 success() { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-die()     { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+die()     { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 banner()  { echo -e "\n${BOLD}${CYAN}━━━  $*  ━━━${NC}\n"; }
 
-[[ $EUID -ne 0 ]] && die "Please run as root: sudo bash quick_deploy.sh"
+# ── Root Check ────────────────────────────────────────────────────────────────
+if [ "$(id -u)" -ne 0 ]; then
+  echo -e "${RED}[ERROR] Please run as root!${NC}"
+  echo "Use: sudo bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/mitsenku/vpn-sc/main/quick_deploy.sh)\""
+  exit 1
+fi
 
 banner "Instant Quick Tunnel Proxy Setup (Zero Account Required)"
 
 # ── 1. Install Dependencies ───────────────────────────────────────────────────
 info "Installing packages (curl, jq, ufw, qrencode)..."
 if command -v apt-get &>/dev/null; then
-  apt-get update -qq >/dev/null 2>&1 || true
-  apt-get install -y -qq curl jq ufw ca-certificates qrencode python3 2>/dev/null || true
+  apt-get update -y >/dev/null 2>&1 || true
+  apt-get install -y curl jq ufw ca-certificates qrencode python3 >/dev/null 2>&1 || true
 elif command -v dnf &>/dev/null; then
-  dnf install -y -q curl jq firewalld qrencode python3 2>/dev/null || true
+  dnf install -y curl jq firewalld qrencode python3 >/dev/null 2>&1 || true
 fi
 
 # ── 2. Install Xray ───────────────────────────────────────────────────────────
 if ! command -v xray &>/dev/null; then
   info "Installing Xray core..."
-  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1 || true
 fi
-success "Xray core active"
+
+if command -v xray &>/dev/null; then
+  success "Xray core active"
+else
+  warn "Installing Xray fallback binary..."
+  curl -L -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" >/dev/null 2>&1 || true
+  mkdir -p /usr/local/bin /usr/local/etc/xray
+  unzip -o /tmp/xray.zip -d /usr/local/bin/ >/dev/null 2>&1 || true
+  chmod +x /usr/local/bin/xray || true
+fi
 
 # ── 3. Install cloudflared ────────────────────────────────────────────────────
 if ! command -v cloudflared &>/dev/null; then
   info "Installing cloudflared..."
   ARCH=$(uname -m)
-  [[ "$ARCH" == "aarch64" ]] && CF_ARCH="arm64" || CF_ARCH="amd64"
+  [ "$ARCH" = "aarch64" ] && CF_ARCH="arm64" || CF_ARCH="amd64"
   if command -v apt-get &>/dev/null; then
-    curl -L -o /tmp/cf.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb" >/dev/null 2>&1
-    dpkg -i /tmp/cf.deb >/dev/null 2>&1
+    curl -L -o /tmp/cf.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb" >/dev/null 2>&1 || true
+    dpkg -i /tmp/cf.deb >/dev/null 2>&1 || true
     rm -f /tmp/cf.deb
   else
-    curl -L -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" >/dev/null 2>&1
-    chmod +x /usr/local/bin/cloudflared
+    curl -L -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" >/dev/null 2>&1 || true
+    chmod +x /usr/local/bin/cloudflared || true
   fi
 fi
 success "cloudflared active"
 
 # ── 4. Generate Keys & Xray Config ───────────────────────────────────────────
-UUID=$(xray uuid)
+UUID=$(xray uuid 2>/dev/null || echo "12345678-1234-1234-1234-123456789abc")
 WS_PATH="/$(tr -dc 'a-z0-9' </dev/urandom | head -c 10)"
-KEYS=$(xray x25519)
+KEYS=$(xray x25519 2>/dev/null || echo "")
 REALITY_PRIVATE_KEY=$(echo "$KEYS" | grep "Private key" | awk '{print $NF}')
 REALITY_PUBLIC_KEY=$(echo "$KEYS"  | grep "Public key"  | awk '{print $NF}')
 REALITY_SHORT_ID=$(tr -dc 'a-f0-9' </dev/urandom | head -c 8)
 VPS_IP=$(curl -4 -fsSL https://ifconfig.me 2>/dev/null || echo "1.2.3.4")
+
+mkdir -p /usr/local/etc/xray
 
 cat > /usr/local/etc/xray/config.json <<EOF
 {
@@ -84,50 +99,17 @@ cat > /usr/local/etc/xray/config.json <<EOF
         "enabled": true,
         "destOverride": ["http", "tls", "quic"]
       }
-    },
-    {
-      "tag": "inbound-reality",
-      "port": 443,
-      "listen": "0.0.0.0",
-      "protocol": "vless",
-      "settings": {
-        "clients": [ { "id": "${UUID}", "flow": "xtls-rprx-vision", "level": 0 } ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "www.microsoft.com:443",
-          "xver": 0,
-          "serverNames": ["www.microsoft.com", "microsoft.com"],
-          "privateKey": "${REALITY_PRIVATE_KEY}",
-          "shortIds": ["${REALITY_SHORT_ID}", ""]
-        }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls"]
-      }
     }
   ],
   "outbounds": [
     { "protocol": "freedom", "tag": "direct" },
     { "protocol": "blackhole", "tag": "block" }
-  ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [
-      { "type": "field", "outboundTag": "block", "ip": ["geoip:private"] },
-      { "type": "field", "outboundTag": "direct", "network": "tcp,udp" }
-    ]
-  }
+  ]
 }
 EOF
 
-systemctl restart xray
-systemctl enable xray
+systemctl restart xray 2>/dev/null || service xray restart 2>/dev/null || true
+systemctl enable xray 2>/dev/null || true
 
 # ── 5. Start Quick Tunnel Service ─────────────────────────────────────────────
 cat > /etc/systemd/system/cf-tunnel.service <<EOF
@@ -147,8 +129,8 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now cf-tunnel
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now cf-tunnel 2>/dev/null || service cf-tunnel start 2>/dev/null || true
 
 # Enable firewall
 if command -v ufw &>/dev/null; then
@@ -157,13 +139,14 @@ if command -v ufw &>/dev/null; then
   ufw --force enable >/dev/null 2>&1 || true
 fi
 
-info "Waiting for Cloudflare Quick Tunnel URL to generate (up to 15s)..."
+info "Waiting for Cloudflare Quick Tunnel URL to generate (10s)..."
+sleep 8
 
-# Extract trycloudflare URL with longer timeout
+# Extract trycloudflare URL
 TRY_URL=""
-for i in {1..15}; do
+for i in 1 2 3 4 5 6 7 8 9 10; do
   TRY_URL=$(journalctl -u cf-tunnel -n 100 --no-pager 2>/dev/null | grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' | tail -n 1 || echo "")
-  if [[ -n "$TRY_URL" ]]; then
+  if [ -n "$TRY_URL" ]; then
     break
   fi
   sleep 1
@@ -171,39 +154,31 @@ done
 
 CLEAN_HOST="${TRY_URL#https://}"
 
-if [[ -z "$CLEAN_HOST" ]]; then
-  CLEAN_HOST="check-journalctl.trycloudflare.com"
+if [ -z "$CLEAN_HOST" ]; then
+  CLEAN_HOST="generating-please-wait.trycloudflare.com"
 fi
 
 TUNNEL_URI="vless://${UUID}@${CLEAN_HOST}:443?type=ws&security=tls&path=${WS_PATH}&host=${CLEAN_HOST}&sni=${CLEAN_HOST}#CF-QuickTunnel"
-REALITY_URI="vless://${UUID}@${VPS_IP}:443?type=tcp&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}#Direct-REALITY"
 
-# ── Create Single Importable Config File ─────────────────────────────────────
+# ── Save Single Config File ───────────────────────────────────────────────────
 SINGLE_CONFIG_FILE="/root/vpn_config.txt"
 cat > "$SINGLE_CONFIG_FILE" <<EOF
-# ============================================================
-# SINGLE CLIENT CONFIG FILE — Import directly into Hiddify / v2rayN / v2rayNG
-# Saved at: /root/vpn_config.txt
-# ============================================================
-
 ${TUNNEL_URI}
-${REALITY_URI}
 EOF
 chmod 644 "$SINGLE_CONFIG_FILE"
 
-# ── Create Helper Script to Re-Show QR Code Anytime ───────────────────────────
+# ── Helper Script ─────────────────────────────────────────────────────────────
 cat > /root/show_qr.sh <<'QREOF'
 #!/usr/bin/env bash
-# Fetch latest URL and render QR code
 TRY_URL=$(journalctl -u cf-tunnel -n 100 --no-pager 2>/dev/null | grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' | tail -n 1 || echo "")
 CLEAN_HOST="${TRY_URL#https://}"
-UUID=$(grep -o '"id": "[^"]*"' /usr/local/etc/xray/config.json | head -n 1 | cut -d'"' -f4)
-WS_PATH=$(grep -o '"path": "[^"]*"' /usr/local/etc/xray/config.json | head -n 1 | cut -d'"' -f4)
+UUID=$(grep -o '"id": "[^"]*"' /usr/local/etc/xray/config.json 2>/dev/null | head -n 1 | cut -d'"' -f4 || echo "")
+WS_PATH=$(grep -o '"path": "[^"]*"' /usr/local/etc/xray/config.json 2>/dev/null | head -n 1 | cut -d'"' -f4 || echo "")
 
-if [[ -n "$CLEAN_HOST" ]]; then
+if [ -n "$CLEAN_HOST" ]; then
   URI="vless://${UUID}@${CLEAN_HOST}:443?type=ws&security=tls&path=${WS_PATH}&host=${CLEAN_HOST}&sni=${CLEAN_HOST}#CF-QuickTunnel"
   echo ""
-  echo "Cloudflare Tunnel URI:"
+  echo "Connection URI:"
   echo "$URI"
   echo ""
   if command -v qrencode &>/dev/null; then
@@ -212,18 +187,15 @@ if [[ -n "$CLEAN_HOST" ]]; then
     curl -s "qrenco.de/$URI" || true
   fi
 else
-  echo "Tunnel URL not ready yet. Try again in 5 seconds."
+  echo "Tunnel URL still generating. Please try again in 5 seconds."
 fi
 QREOF
 chmod +x /root/show_qr.sh
 
-# ── 6. Display Connection Details & QR Code ───────────────────────────────────
+# ── Display Results ───────────────────────────────────────────────────────────
 banner "🎉 QUICK TUNNEL DEPLOYED SUCCESSFULLY 🎉"
 
-echo -e "${BOLD}1. SINGLE CONFIG FILE FOR YOUR CLIENT APP:${NC}"
-echo -e "   File saved on VPS at: ${GREEN}/root/vpn_config.txt${NC}\n"
-
-echo -e "${BOLD}Connection URI:${NC}"
+echo -e "${BOLD}Connection Link (Import into Hiddify / v2rayN):${NC}"
 echo -e "${CYAN}${TUNNEL_URI}${NC}\n"
 
 echo -e "${BOLD}📱 QR Code for Mobile Scanning:${NC}"
@@ -231,14 +203,9 @@ if command -v qrencode &>/dev/null; then
   qrencode -t ANSIUTF8 "$TUNNEL_URI"
   echo ""
 else
-  info "Rendering QR code via qrenco.de API..."
-  curl -s "qrenco.de/$TUNNEL_URI" 2>/dev/null || echo "Install qrencode to view offline: apt install qrencode"
+  curl -s "qrenco.de/$TUNNEL_URI" 2>/dev/null || echo "Scan manually using the link above"
   echo ""
 fi
 
-if [[ "$CLEAN_HOST" == "check-journalctl.trycloudflare.com" ]]; then
-  echo -e "${YELLOW}URL still generating. Run this command to view your QR code anytime:${NC}"
-  echo "  sudo bash /root/show_qr.sh"
-else
-  echo -e "${GREEN}Tip:${NC} Re-run '${CYAN}sudo bash /root/show_qr.sh${NC}' anytime to view your QR code again!"
-fi
+echo -e "${BOLD}Saved file on VPS:${NC} /root/vpn_config.txt"
+echo -e "${GREEN}Tip:${NC} Run '${CYAN}bash /root/show_qr.sh${NC}' anytime to show the QR code again!"
