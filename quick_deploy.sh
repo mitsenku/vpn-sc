@@ -179,20 +179,58 @@ fi
 TUNNEL_URI="vless://${UUID}@${CLEAN_HOST}:443?type=ws&security=tls&path=${WS_PATH}&host=${CLEAN_HOST}&sni=${CLEAN_HOST}#CF-QuickTunnel"
 REALITY_URI="vless://${UUID}@${VPS_IP}:443?type=tcp&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}#Direct-REALITY"
 
+# ── Create Single Importable Config File ─────────────────────────────────────
+SINGLE_CONFIG_FILE="/root/vpn_config.txt"
+cat > "$SINGLE_CONFIG_FILE" <<EOF
+# ============================================================
+# SINGLE CLIENT CONFIG FILE — Import directly into Hiddify / v2rayN / v2rayNG
+# Saved at: /root/vpn_config.txt
+# ============================================================
+
+${TUNNEL_URI}
+${REALITY_URI}
+EOF
+chmod 644 "$SINGLE_CONFIG_FILE"
+
+# ── Create v2rayN Client JSON Config File ────────────────────────────────────
+V2RAYN_JSON_FILE="/root/v2rayN_client.json"
+cat > "$V2RAYN_JSON_FILE" <<EOF
+{
+  "v": "2",
+  "ps": "CF-QuickTunnel",
+  "add": "${CLEAN_HOST}",
+  "port": "443",
+  "id": "${UUID}",
+  "aid": "0",
+  "scy": "none",
+  "net": "ws",
+  "type": "none",
+  "host": "${CLEAN_HOST}",
+  "path": "${WS_PATH}",
+  "tls": "tls",
+  "sni": "${CLEAN_HOST}",
+  "alpn": ""
+}
+EOF
+chmod 644 "$V2RAYN_JSON_FILE"
+
 # ── 6. Display Connection Details & QR Code ───────────────────────────────────
 banner "🎉 QUICK TUNNEL DEPLOYED SUCCESSFULLY 🎉"
 
-echo -e "${BOLD}1. Cloudflare Quick Tunnel Link (hides VPS IP, no account needed):${NC}"
-echo -e "${CYAN}${TUNNEL_URI}${NC}\n"
+echo -e "${BOLD}1. SINGLE CONFIG FILE FOR YOUR CLIENT APP:${NC}"
+echo -e "   File saved on VPS at: ${GREEN}/root/vpn_config.txt${NC}"
+echo -e "   v2rayN JSON saved at: ${GREEN}/root/v2rayN_client.json${NC}\n"
+
+echo -e "${BOLD}File Contents (Copy everything between lines below & save as config.txt):${NC}"
+echo -e "${YELLOW}------------------- BEGIN CONFIG FILE -------------------${NC}"
+cat "$SINGLE_CONFIG_FILE"
+echo -e "${YELLOW}-------------------- END CONFIG FILE --------------------${NC}\n"
 
 if command -v qrencode &>/dev/null && [[ "$CLEAN_HOST" != "check-journalctl.trycloudflare.com" ]]; then
   echo -e "${BOLD}Scan with Hiddify / v2rayNG on Phone:${NC}"
   qrencode -t ANSIUTF8 "$TUNNEL_URI"
   echo ""
 fi
-
-echo -e "${BOLD}2. REALITY Direct Link (Fallback — direct fast connection):${NC}"
-echo -e "${CYAN}${REALITY_URI}${NC}\n"
 
 if [[ "$CLEAN_HOST" == "check-journalctl.trycloudflare.com" ]]; then
   echo -e "${YELLOW}URL still generating. Run this command to view your link:${NC}"

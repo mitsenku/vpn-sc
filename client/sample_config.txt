@@ -1,0 +1,14 @@
+# ============================================================
+# SINGLE IMPORTABLE CONFIG FILE FOR CLIENT APPS (Hiddify / v2rayN / v2rayNG)
+#
+# Instructions:
+#  1. Save this text as a file (e.g. `vpn_config.txt` or `config.txt`)
+#  2. Open Hiddify → Tap "+" → "Add from File" → select this file!
+#  3. Open v2rayN → Click "Servers" → "Import config from file" → select this file!
+# ============================================================
+
+# Primary Profile (Cloudflare Quick Tunnel — hides VPS IP)
+vless://YOUR_UUID_HERE@YOUR_TUNNEL.trycloudflare.com:443?type=ws&security=tls&path=/ws12345&host=YOUR_TUNNEL.trycloudflare.com&sni=YOUR_TUNNEL.trycloudflare.com#CF-QuickTunnel
+
+# Fallback Profile (Direct REALITY — lower latency, port 443)
+vless://YOUR_UUID_HERE@YOUR_VPS_IP:443?type=tcp&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=YOUR_PUBLIC_KEY&sid=YOUR_SHORT_ID#Direct-REALITY
