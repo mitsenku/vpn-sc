@@ -25,10 +25,10 @@ banner "Instant Quick Tunnel Proxy Setup (Zero Account Required)"
 # ── 1. Install Dependencies ───────────────────────────────────────────────────
 info "Installing packages (curl, jq, ufw, qrencode)..."
 if command -v apt-get &>/dev/null; then
-  apt-get update -qq
-  apt-get install -y -qq curl jq ufw ca-certificates qrencode 2>/dev/null || true
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-get install -y -qq curl jq ufw ca-certificates qrencode python3 2>/dev/null || true
 elif command -v dnf &>/dev/null; then
-  dnf install -y -q curl jq firewalld qrencode 2>/dev/null || true
+  dnf install -y -q curl jq firewalld qrencode python3 2>/dev/null || true
 fi
 
 # ── 2. Install Xray ───────────────────────────────────────────────────────────
@@ -157,17 +157,16 @@ if command -v ufw &>/dev/null; then
   ufw --force enable >/dev/null 2>&1 || true
 fi
 
-info "Waiting for Cloudflare Quick Tunnel URL to generate..."
-sleep 5
+info "Waiting for Cloudflare Quick Tunnel URL to generate (up to 15s)..."
 
-# Extract trycloudflare URL
+# Extract trycloudflare URL with longer timeout
 TRY_URL=""
-for i in {1..10}; do
+for i in {1..15}; do
   TRY_URL=$(journalctl -u cf-tunnel -n 100 --no-pager 2>/dev/null | grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' | tail -n 1 || echo "")
   if [[ -n "$TRY_URL" ]]; then
     break
   fi
-  sleep 2
+  sleep 1
 done
 
 CLEAN_HOST="${TRY_URL#https://}"
@@ -192,47 +191,54 @@ ${REALITY_URI}
 EOF
 chmod 644 "$SINGLE_CONFIG_FILE"
 
-# ── Create v2rayN Client JSON Config File ────────────────────────────────────
-V2RAYN_JSON_FILE="/root/v2rayN_client.json"
-cat > "$V2RAYN_JSON_FILE" <<EOF
-{
-  "v": "2",
-  "ps": "CF-QuickTunnel",
-  "add": "${CLEAN_HOST}",
-  "port": "443",
-  "id": "${UUID}",
-  "aid": "0",
-  "scy": "none",
-  "net": "ws",
-  "type": "none",
-  "host": "${CLEAN_HOST}",
-  "path": "${WS_PATH}",
-  "tls": "tls",
-  "sni": "${CLEAN_HOST}",
-  "alpn": ""
-}
-EOF
-chmod 644 "$V2RAYN_JSON_FILE"
+# ── Create Helper Script to Re-Show QR Code Anytime ───────────────────────────
+cat > /root/show_qr.sh <<'QREOF'
+#!/usr/bin/env bash
+# Fetch latest URL and render QR code
+TRY_URL=$(journalctl -u cf-tunnel -n 100 --no-pager 2>/dev/null | grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' | tail -n 1 || echo "")
+CLEAN_HOST="${TRY_URL#https://}"
+UUID=$(grep -o '"id": "[^"]*"' /usr/local/etc/xray/config.json | head -n 1 | cut -d'"' -f4)
+WS_PATH=$(grep -o '"path": "[^"]*"' /usr/local/etc/xray/config.json | head -n 1 | cut -d'"' -f4)
+
+if [[ -n "$CLEAN_HOST" ]]; then
+  URI="vless://${UUID}@${CLEAN_HOST}:443?type=ws&security=tls&path=${WS_PATH}&host=${CLEAN_HOST}&sni=${CLEAN_HOST}#CF-QuickTunnel"
+  echo ""
+  echo "Cloudflare Tunnel URI:"
+  echo "$URI"
+  echo ""
+  if command -v qrencode &>/dev/null; then
+    qrencode -t ANSIUTF8 "$URI"
+  else
+    curl -s "qrenco.de/$URI" || true
+  fi
+else
+  echo "Tunnel URL not ready yet. Try again in 5 seconds."
+fi
+QREOF
+chmod +x /root/show_qr.sh
 
 # ── 6. Display Connection Details & QR Code ───────────────────────────────────
 banner "🎉 QUICK TUNNEL DEPLOYED SUCCESSFULLY 🎉"
 
 echo -e "${BOLD}1. SINGLE CONFIG FILE FOR YOUR CLIENT APP:${NC}"
-echo -e "   File saved on VPS at: ${GREEN}/root/vpn_config.txt${NC}"
-echo -e "   v2rayN JSON saved at: ${GREEN}/root/v2rayN_client.json${NC}\n"
+echo -e "   File saved on VPS at: ${GREEN}/root/vpn_config.txt${NC}\n"
 
-echo -e "${BOLD}File Contents (Copy everything between lines below & save as config.txt):${NC}"
-echo -e "${YELLOW}------------------- BEGIN CONFIG FILE -------------------${NC}"
-cat "$SINGLE_CONFIG_FILE"
-echo -e "${YELLOW}-------------------- END CONFIG FILE --------------------${NC}\n"
+echo -e "${BOLD}Connection URI:${NC}"
+echo -e "${CYAN}${TUNNEL_URI}${NC}\n"
 
-if command -v qrencode &>/dev/null && [[ "$CLEAN_HOST" != "check-journalctl.trycloudflare.com" ]]; then
-  echo -e "${BOLD}Scan with Hiddify / v2rayNG on Phone:${NC}"
+echo -e "${BOLD}📱 QR Code for Mobile Scanning:${NC}"
+if command -v qrencode &>/dev/null; then
   qrencode -t ANSIUTF8 "$TUNNEL_URI"
+  echo ""
+else
+  info "Rendering QR code via qrenco.de API..."
+  curl -s "qrenco.de/$TUNNEL_URI" 2>/dev/null || echo "Install qrencode to view offline: apt install qrencode"
   echo ""
 fi
 
 if [[ "$CLEAN_HOST" == "check-journalctl.trycloudflare.com" ]]; then
-  echo -e "${YELLOW}URL still generating. Run this command to view your link:${NC}"
-  echo "  sudo journalctl -u cf-tunnel -n 20 --no-pager | grep trycloudflare"
+  echo -e "${YELLOW}URL still generating. Run this command to view your QR code anytime:${NC}"
+  echo "  sudo bash /root/show_qr.sh"
+else
+  echo -e "${GREEN}Tip:${NC} Re-run '${CYAN}sudo bash /root/show_qr.sh${NC}' anytime to view your QR code again!"
 fi
