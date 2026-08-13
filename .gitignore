@@ -1,0 +1,32 @@
+# Sensitive credential files
+.env
+.credentials
+*.credentials
+
+# Generated configs (contain keys)
+server/config/xray-config.json
+server/config/geoip.dat
+server/config/geosite.dat
+
+# Client output (contains UUIDs and QR codes)
+client/output/
+
+# Client binaries / downloads
+v2rayN/
+
+# wgcf temp files
+wgcf-account.toml
+wgcf-profile.conf
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Logs
+*.log

@@ -1,0 +1,107 @@
+# =============================================================================
+#  docker-compose.yml — Cloudflare Tunnel + Xray Proxy Stack
+# =============================================================================
+services:
+
+  # ── Xray-core proxy ──────────────────────────────────────────────────────
+  xray:
+    image: teddysun/xray:latest
+    container_name: xray-proxy
+    restart: unless-stopped
+    ports:
+      # WS listener: bind to loopback only — reachable only via cloudflared
+      - "127.0.0.1:8080:8080"
+      # REALITY listener: public-facing direct fallback
+      - "443:443"
+    volumes:
+      - ./config/xray-config.json:/etc/xray/config.json:ro
+    networks:
+      - proxy-net
+    cap_add:
+      - NET_ADMIN    # Required for WireGuard outbound (WARP)
+    sysctls:
+      - net.core.default_qdisc=fq
+      - net.ipv4.tcp_congestion_control=bbr
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ss -tlnp | grep -q ':8080'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Cloudflare Tunnel daemon ──────────────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cf-tunnel
+    restart: unless-stopped
+    # Token is injected from .env file
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
+    environment:
+      # Use QUIC transport for lower latency to Cloudflare edge
+      - TUNNEL_TRANSPORT_PROTOCOL=quic
+    networks:
+      - proxy-net
+    depends_on:
+      xray:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "info"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Watchtower: auto-update images daily ──────────────────────────────────
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Update only our containers, cleanup old images, check daily at 3 AM
+    command: >
+      --schedule "0 0 3 * * *"
+      --cleanup
+      --include-stopped
+      xray-proxy cf-tunnel
+    environment:
+      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  proxy-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+# =============================================================================
+#  HOW CLOUDFLARE TUNNEL ROUTES TRAFFIC:
+#
+#  Client → Cloudflare Edge (443) → cloudflared container (QUIC) →
+#  xray container (127.0.0.1:8080 WS) → Open Internet
+#
+#  In Cloudflare Zero Trust Dashboard, set public hostname to:
+#    your-subdomain.example.com  →  http://xray:8080
+#  (use container name "xray" as hostname — Docker DNS resolves it)
+# =============================================================================
