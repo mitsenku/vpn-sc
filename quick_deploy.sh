@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  quick_deploy.sh — 100% Zero-Prompt Quick Tunnel Deployer
+#  quick_deploy.sh — Fast Zero-Prompt Quick Tunnel Deployer
 #  Uses Cloudflare Quick Tunnel (trycloudflare.com).
 #  No Cloudflare account, no domain, no typing required!
-#
-#  Usage:
-#    curl -fsSL https://raw.githubusercontent.com/mitsenku/vpn-sc/main/quick_deploy.sh | bash
 # =============================================================================
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -14,7 +11,6 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 info()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
 success() { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-die()     { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 banner()  { echo -e "\n${BOLD}${CYAN}━━━  $*  ━━━${NC}\n"; }
 
 # ── Root Check ────────────────────────────────────────────────────────────────
@@ -27,54 +23,77 @@ fi
 banner "Instant Quick Tunnel Proxy Setup (Zero Account Required)"
 
 # ── 1. Install Dependencies ───────────────────────────────────────────────────
-info "Installing packages (curl, jq, ufw, qrencode)..."
+info "Installing packages (curl, unzip, jq, ufw, qrencode)..."
 if command -v apt-get &>/dev/null; then
   apt-get update -y >/dev/null 2>&1 || true
-  apt-get install -y curl jq ufw ca-certificates qrencode python3 >/dev/null 2>&1 || true
+  apt-get install -y curl unzip jq ufw ca-certificates qrencode python3 >/dev/null 2>&1 || true
 elif command -v dnf &>/dev/null; then
-  dnf install -y curl jq firewalld qrencode python3 >/dev/null 2>&1 || true
+  dnf install -y curl unzip jq firewalld qrencode python3 >/dev/null 2>&1 || true
 fi
+success "Dependencies ready"
 
-# ── 2. Install Xray ───────────────────────────────────────────────────────────
+# ── 2. Fast Xray Installation (Direct Binary - No Hang) ───────────────────────
 if ! command -v xray &>/dev/null; then
-  info "Installing Xray core..."
-  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1 || true
+  info "Downloading Xray-core binary..."
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    x86_64)  X_ARCH="64" ;;
+    aarch64) X_ARCH="arm64-v8a" ;;
+    *)       X_ARCH="64" ;;
+  esac
+
+  mkdir -p /usr/local/bin /usr/local/etc/xray
+  curl -L --max-time 15 -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${X_ARCH}.zip" >/dev/null 2>&1 || true
+
+  if [ -f /tmp/xray.zip ]; then
+    unzip -o /tmp/xray.zip xray geosite.dat geoip.dat -d /usr/local/bin/ >/dev/null 2>&1 || true
+    chmod +x /usr/local/bin/xray || true
+    rm -f /tmp/xray.zip
+  fi
 fi
 
 if command -v xray &>/dev/null; then
-  success "Xray core active"
+  success "Xray core active ($(xray version 2>/dev/null | head -n1 || echo 'ready'))"
 else
-  warn "Installing Xray fallback binary..."
-  curl -L -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" >/dev/null 2>&1 || true
-  mkdir -p /usr/local/bin /usr/local/etc/xray
-  unzip -o /tmp/xray.zip -d /usr/local/bin/ >/dev/null 2>&1 || true
-  chmod +x /usr/local/bin/xray || true
+  info "Falling back to official installer script..."
+  bash -c "$(curl -L --max-time 10 https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1 || true
 fi
+
+# Create Xray systemd service
+cat > /etc/systemd/system/xray.service <<EOF
+[Unit]
+Description=Xray Service
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Restart=on-failure
+RestartPreventExitStatus=23
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 # ── 3. Install cloudflared ────────────────────────────────────────────────────
 if ! command -v cloudflared &>/dev/null; then
-  info "Installing cloudflared..."
+  info "Downloading cloudflared binary..."
   ARCH=$(uname -m)
   [ "$ARCH" = "aarch64" ] && CF_ARCH="arm64" || CF_ARCH="amd64"
-  if command -v apt-get &>/dev/null; then
-    curl -L -o /tmp/cf.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb" >/dev/null 2>&1 || true
-    dpkg -i /tmp/cf.deb >/dev/null 2>&1 || true
-    rm -f /tmp/cf.deb
-  else
-    curl -L -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" >/dev/null 2>&1 || true
-    chmod +x /usr/local/bin/cloudflared || true
-  fi
+
+  curl -L --max-time 15 -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" >/dev/null 2>&1 || true
+  chmod +x /usr/local/bin/cloudflared || true
 fi
 success "cloudflared active"
 
 # ── 4. Generate Keys & Xray Config ───────────────────────────────────────────
+info "Generating UUID & keys..."
 UUID=$(xray uuid 2>/dev/null || echo "12345678-1234-1234-1234-123456789abc")
 WS_PATH="/$(tr -dc 'a-z0-9' </dev/urandom | head -c 10)"
-KEYS=$(xray x25519 2>/dev/null || echo "")
-REALITY_PRIVATE_KEY=$(echo "$KEYS" | grep "Private key" | awk '{print $NF}')
-REALITY_PUBLIC_KEY=$(echo "$KEYS"  | grep "Public key"  | awk '{print $NF}')
-REALITY_SHORT_ID=$(tr -dc 'a-f0-9' </dev/urandom | head -c 8)
-VPS_IP=$(curl -4 -fsSL https://ifconfig.me 2>/dev/null || echo "1.2.3.4")
+VPS_IP=$(curl -4 -fsSL --max-time 5 https://ifconfig.me 2>/dev/null || echo "1.2.3.4")
 
 mkdir -p /usr/local/etc/xray
 
@@ -108,10 +127,12 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-systemctl restart xray 2>/dev/null || service xray restart 2>/dev/null || true
-systemctl enable xray 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl restart xray >/dev/null 2>&1 || true
+systemctl enable xray >/dev/null 2>&1 || true
 
 # ── 5. Start Quick Tunnel Service ─────────────────────────────────────────────
+info "Starting Cloudflare Quick Tunnel..."
 cat > /etc/systemd/system/cf-tunnel.service <<EOF
 [Unit]
 Description=Cloudflare Quick Tunnel
@@ -129,8 +150,8 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload 2>/dev/null || true
-systemctl enable --now cf-tunnel 2>/dev/null || service cf-tunnel start 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable --now cf-tunnel >/dev/null 2>&1 || true
 
 # Enable firewall
 if command -v ufw &>/dev/null; then
@@ -139,12 +160,12 @@ if command -v ufw &>/dev/null; then
   ufw --force enable >/dev/null 2>&1 || true
 fi
 
-info "Waiting for Cloudflare Quick Tunnel URL to generate (10s)..."
-sleep 8
+info "Waiting for Cloudflare Tunnel URL to generate (5s)..."
+sleep 5
 
 # Extract trycloudflare URL
 TRY_URL=""
-for i in 1 2 3 4 5 6 7 8 9 10; do
+for i in {1..10}; do
   TRY_URL=$(journalctl -u cf-tunnel -n 100 --no-pager 2>/dev/null | grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' | tail -n 1 || echo "")
   if [ -n "$TRY_URL" ]; then
     break
@@ -162,9 +183,7 @@ TUNNEL_URI="vless://${UUID}@${CLEAN_HOST}:443?type=ws&security=tls&path=${WS_PAT
 
 # ── Save Single Config File ───────────────────────────────────────────────────
 SINGLE_CONFIG_FILE="/root/vpn_config.txt"
-cat > "$SINGLE_CONFIG_FILE" <<EOF
-${TUNNEL_URI}
-EOF
+echo "$TUNNEL_URI" > "$SINGLE_CONFIG_FILE"
 chmod 644 "$SINGLE_CONFIG_FILE"
 
 # ── Helper Script ─────────────────────────────────────────────────────────────
